@@ -1,0 +1,51 @@
+name: keepalive
+
+# Ping /api/health toutes les 30 s pour empecher Render de mettre le service
+# en veille (veille apres 15 min sans trafic sur le plan free).
+#
+# GitHub Actions ne descend pas sous 5 min de granularite cron : on lance donc
+# un job toutes les 5 min, et CE job ping en boucle toutes les 30 s pendant
+# ~4 min 40. Resultat : un ping reel toutes les 30 s, en continu.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Ping /api/health toutes les 30 s
+        env:
+          TARGET: https://destin-ia-polyvalent.onrender.com/api/health
+        run: |
+          set -u
+          END=$(( $(date +%s) + 280 ))   # ~4 min 40 de pings
+          i=0
+          fail=0
+          while [ "$(date +%s)" -lt "$END" ]; do
+            i=$((i+1))
+            code=$(curl -s -o /tmp/body -w '%{http_code}' --max-time 25 "$TARGET" || echo 000)
+            t=$(date -u +%H:%M:%S)
+            if [ "$code" = "200" ]; then
+              echo "[$t] ping #$i -> 200 OK  $(head -c 120 /tmp/body)"
+            else
+              fail=$((fail+1))
+              echo "[$t] ping #$i -> $code (echec $fail)"
+            fi
+            sleep 30
+          done
+          echo "--- $i pings, $fail echec(s) ---"
+          # On ne fait pas echouer le job sur un ping rate isole (cold start ~50 s).
+          if [ "$fail" -ge "$i" ]; then
+            echo "Tous les pings ont echoue"; exit 1
+          fi
